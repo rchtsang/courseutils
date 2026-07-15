@@ -1,0 +1,16 @@
+[project]
+name = "courseutils"
+version = "0.1.0"
+description = "my python library for course admin and grading"
+readme = "README.md"
+authors = [
+    { name = "rctsang", email = "ryan.ying.tsang@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "canvasapi>=3.4.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.16,<0.12.0"]
+build-backend = "uv_build"
