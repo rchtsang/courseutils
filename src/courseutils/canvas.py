@@ -131,3 +131,35 @@ class CanvasManager:
 
         return progress
 
+    def create_assignment(
+        self,
+        id: str,
+        title: str,
+        max_points: float|int,
+        gradescope_id: int,
+    ):
+        """
+        Create a new assignment in the database and add it to canvas
+
+        :param      id:             local db assignment id
+        :type       id:             str
+        :param      title:          assignment title
+        :type       title:          str
+        :param      max_points:     assignment point value
+        :type       max_points:     float|int
+        :param      gradescope_id:  assignment id on gradescope
+        :type       gradescope_id:  int
+        """
+        assignment = self.course.create_assignment(assignment={
+            'name': title,
+            'points_possible': max_points,
+        })
+
+        self.db_conn.execute("""
+            INSERT INTO assignments
+              (id, canvas_id, gradescope_id, title, max_points)
+            VALUES
+              (?, ?, ?, ?, ?)
+        """, (id, assignment.id, gradescope_id, title, max_points))
+
+        return assignment
