@@ -44,6 +44,9 @@ CREATE TABLE IF NOT EXISTS assignments (
   canvas_id INTEGER NOT NULL UNIQUE,
   gradescope_id INTEGER NOT NULL UNIQUE,
   title TEXT NOT NULL UNIQUE,
+  type TEXT NOT NULL CHECK (type IN (
+    'homework', 'quiz', 'exam', 'project', 'final', 'midterm', 'lab', 'other'
+  )),
   max_points REAL
 );
 

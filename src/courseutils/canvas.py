@@ -135,6 +135,7 @@ class CanvasManager:
         self,
         id: str,
         title: str,
+        assignment_type: str,
         max_points: float|int,
         gradescope_id: int,
     ):
@@ -145,6 +146,8 @@ class CanvasManager:
         :type       id:             str
         :param      title:          assignment title
         :type       title:          str
+        :param      assignment_type: assignment type
+        :type       assignment_type: str
         :param      max_points:     assignment point value
         :type       max_points:     float|int
         :param      gradescope_id:  assignment id on gradescope
@@ -157,9 +160,16 @@ class CanvasManager:
 
         self.db_conn.execute("""
             INSERT INTO assignments
-              (id, canvas_id, gradescope_id, title, max_points)
+              (id, canvas_id, gradescope_id, title, type, max_points)
             VALUES
-              (?, ?, ?, ?, ?)
-        """, (id, assignment.id, gradescope_id, title, max_points))
+              (?, ?, ?, ?, ?, ?)
+        """, (
+            id,
+            assignment.id,
+            gradescope_id,
+            title,
+            assignment_type,
+            max_points,
+        ))
 
         return assignment
