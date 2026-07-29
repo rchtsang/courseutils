@@ -92,6 +92,23 @@ CREATE TABLE IF NOT EXISTS grades (
     ON DELETE CASCADE
 );
 
+-- persistent transformations applied when building final grades
+CREATE TABLE IF NOT EXISTS grade_operations (
+  id INTEGER PRIMARY KEY,
+  sid TEXT NOT NULL,
+  assignment_id TEXT NOT NULL,
+  type TEXT NOT NULL,
+  priority INTEGER NOT NULL,
+  parameters TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(parameters)),
+  policy TEXT,
+
+  UNIQUE (sid, assignment_id, priority),
+
+  FOREIGN KEY (sid, assignment_id) REFERENCES submissions (sid, assignment_id)
+    ON UPDATE CASCADE
+    ON DELETE CASCADE
+);
+
 -- questions derived from gradscope export
 CREATE TABLE IF NOT EXISTS questions (
   id TEXT PRIMARY KEY,
