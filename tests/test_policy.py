@@ -1,12 +1,14 @@
 import tempfile
 import unittest
+from datetime import timedelta
 from pathlib import Path
 
 from courseutils import CourseManager
 from courseutils.models import Grade, GradeOperation, Operation
 from courseutils.policy import (
     AdjustmentPolicy,
-    GradeState,
+    Adjustment,
+    ExtensionPolicy,
     LatePenaltyPolicy,
     Policy,
     SlipDaysPolicy,
@@ -31,10 +33,9 @@ class ScoreScalePolicy(Policy):
     def apply(self, context, grade, parameters):
         if grade.score is None:
             return grade
-        return GradeState(
+        return grade._replace(
             score=grade.score * float(parameters['factor']),
             comments=grade.comments + ("Custom score scale",),
-            waived_lateness_hours=grade.waived_lateness_hours,
         )
 
 
@@ -81,21 +82,23 @@ class PolicyPipelineTests(unittest.TestCase):
                 self.course,
                 id='slip-days',
                 priority=10,
-                allowance_days=1,
+                allowance=timedelta(days=1),
                 assignment_types=('homework',),
             ),
             LatePenaltyPolicy(
                 self.course,
                 id='late-penalty',
                 priority=20,
-                points_per_day=10,
+                penalty=lambda score, lateness: score - 10 * (
+                    lateness / timedelta(days=1)
+                ),
                 assignment_types=('homework',),
             ),
             AdjustmentPolicy(
                 self.course,
                 id='adjustment-handler',
                 priority=30,
-                points=0,
+                adjustment=Adjustment(points=0),
                 student_ids=('not-a-student',),
             ),
         ])
@@ -104,7 +107,10 @@ class PolicyPipelineTests(unittest.TestCase):
             'hw2',
             'score_adjustment',
             30,
-            {'points': -5, 'reason': 'manual penalty'},
+            {
+                'adjustment': Adjustment(points=-5).to_dict(),
+                'reason': 'manual penalty',
+            },
         )
 
         self.course.build_grades()
@@ -147,6 +153,42 @@ class PolicyPipelineTests(unittest.TestCase):
         }
         self.assertEqual(grades[('student-1', 'hw1')].score, 50)
         self.assertEqual(grades[('student-1', 'hw2')].score, 100)
+
+    def test_adjustment_supports_points_and_percentages(self):
+        self.assertEqual(80 + Adjustment(points=-5), 75)
+        self.assertEqual(80 + Adjustment(percent=-10), 72)
+
+    def test_extension_targets_specific_student_and_assignment(self):
+        self.course.register_policies([
+            ExtensionPolicy(
+                self.course,
+                id='hw1-extension',
+                priority=10,
+                extension=timedelta(days=1),
+                student_ids=('student-1',),
+                assignment_ids=('hw1',),
+            ),
+            LatePenaltyPolicy(
+                self.course,
+                id='late-penalty',
+                priority=20,
+                penalty=lambda score, lateness: score + Adjustment(
+                    percent=max(
+                        -50,
+                        -20 * (lateness / timedelta(days=1)),
+                    ),
+                ),
+            ),
+        ])
+
+        self.course.build_grades()
+
+        grades = {
+            (grade.sid, grade.assignment_id): grade
+            for grade in self.course.get_rows(Grade)
+        }
+        self.assertEqual(grades[('student-1', 'hw1')].score, 100)
+        self.assertEqual(grades[('student-1', 'hw2')].score, 70)
 
 
 if __name__ == '__main__':

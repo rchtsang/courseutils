@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from typing import TYPE_CHECKING, Iterable, Mapping, NamedTuple
+from dataclasses import dataclass
+from datetime import timedelta
+from typing import TYPE_CHECKING, Callable, Iterable, Mapping, NamedTuple
 
 from .models import (
     Assignment,
@@ -34,13 +36,68 @@ class GradeState(NamedTuple):
 
     score: float | None
     comments: tuple[str, ...] = ()
-    waived_lateness_hours: float = 0.0
+    waived_lateness: timedelta = timedelta()
 
 
-def lateness_hours(lateness: str) -> float:
-    """Convert a Gradescope H:M:S lateness value to hours."""
-    hours, minutes, seconds = (int(part) for part in lateness.split(':'))
-    return hours + minutes / 60 + seconds / 3600
+def parse_timedelta(value: str) -> timedelta:
+    """Parse Gradescope and Python ``timedelta`` string representations."""
+    if ', ' in value:
+        day_part, value = value.split(', ', maxsplit=1)
+        days = int(day_part.removesuffix(' days').removesuffix(' day'))
+    else:
+        days = 0
+    hours, minutes, seconds = value.split(':')
+    return timedelta(
+        days=days,
+        hours=int(hours),
+        minutes=int(minutes),
+        seconds=float(seconds),
+    )
+
+
+@dataclass(frozen=True)
+class Adjustment:
+    """A fixed-point or current-score percent adjustment to a grade value."""
+
+    points: float | None = None
+    percent: float | None = None
+
+    def __post_init__(self):
+        """Require exactly one adjustment representation."""
+        if (self.points is None) == (self.percent is None):
+            raise ValueError("specify exactly one of points or percent")
+
+    def __add__(self, grade: float | int) -> float:
+        """Apply this adjustment when it appears left of a numeric grade.
+
+        A percent value is expressed in percentage points, so ``-10``
+        subtracts ten percent of the current grade.
+        """
+        if not isinstance(grade, (float, int)):
+            return NotImplemented
+        if self.points is not None:
+            return grade + self.points
+        return grade * (1 + self.percent / 100)
+
+    def __radd__(self, grade: float | int) -> float:
+        """Apply this adjustment when it appears right of a numeric grade."""
+        return self + grade
+
+    def to_dict(self) -> dict[str, float]:
+        """Return a JSON-serializable representation of this adjustment."""
+        if self.points is not None:
+            return {'points': self.points}
+        return {'percent': self.percent}
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "Adjustment":
+        """Create an adjustment from its serialized operation parameters."""
+        points = value.get('points')
+        percent = value.get('percent')
+        return cls(
+            points=float(points) if points is not None else None,
+            percent=float(percent) if percent is not None else None,
+        )
 
 
 class Policy(ABC):
@@ -112,37 +169,58 @@ class LatePenaltyPolicy(Policy):
 
     type = "late_penalty"
 
-    def __init__(self, *args, points_per_day: float, **kwargs):
+    def __init__(
+        self,
+        course: "CourseManager",
+        id: str,
+        priority: int,
+        penalty: Callable[[float, timedelta], float],
+        assignment_ids: Iterable[str] | None = None,
+        assignment_types: Iterable[str] | None = None,
+        student_ids: Iterable[str] | None = None,
+    ):
         """
         Configure a late-penalty policy.
 
-        :param points_per_day: points deducted for each unwaived late day
+        :param penalty:           function returning a score for given lateness
+        :param assignment_ids:    optional assignment IDs to target
+        :param assignment_types:  optional assignment types to target
+        :param student_ids:       optional student IDs to target
         """
-        super().__init__(*args, **kwargs)
-        self.points_per_day = points_per_day
+        super().__init__(
+            course,
+            id,
+            priority,
+            assignment_ids,
+            assignment_types,
+            student_ids,
+        )
+        self.penalty = penalty
 
     def generate_operations(self) -> Iterable[Operation]:
         for submission in self.submissions():
-            if lateness_hours(submission.lateness) > 0:
+            if parse_timedelta(submission.lateness) > timedelta():
                 yield Operation(
                     submission.sid,
                     submission.assignment_id,
-                    {'points_per_day': self.points_per_day},
+                    {},
                 )
 
     def apply(self, context, grade, parameters):
         if grade.score is None:
             return grade
-        unwaived_hours = max(
-            lateness_hours(context.submission.lateness) - grade.waived_lateness_hours,
-            0,
+        unwaived_lateness = max(
+            parse_timedelta(context.submission.lateness) - grade.waived_lateness,
+            timedelta(),
         )
-        deduction = float(parameters['points_per_day']) * unwaived_hours / 24
-        if deduction == 0:
+        score = self.penalty(grade.score, unwaived_lateness)
+        if score == grade.score:
             return grade
         return grade._replace(
-            score=grade.score - deduction,
-            comments=grade.comments + (f"Late penalty: -{deduction:g} points",),
+            score=score,
+            comments=grade.comments + (
+                f"Late penalty: {grade.score:g} -> {score:g} points",
+            ),
         )
 
 
@@ -151,14 +229,33 @@ class SlipDaysPolicy(Policy):
 
     type = "slip_days"
 
-    def __init__(self, *args, allowance_days: float, **kwargs):
+    def __init__(
+        self,
+        course: "CourseManager",
+        id: str,
+        priority: int,
+        allowance: timedelta,
+        assignment_ids: Iterable[str] | None = None,
+        assignment_types: Iterable[str] | None = None,
+        student_ids: Iterable[str] | None = None,
+    ):
         """
         Configure automatic slip-day allocation.
 
-        :param allowance_days: number of late days available to each student
+        :param allowance:         lateness available to each student
+        :param assignment_ids:    optional assignment IDs to target
+        :param assignment_types:  optional assignment types to target
+        :param student_ids:       optional student IDs to target
         """
-        super().__init__(*args, **kwargs)
-        self.allowance_days = allowance_days
+        super().__init__(
+            course,
+            id,
+            priority,
+            assignment_ids,
+            assignment_types,
+            student_ids,
+        )
+        self.allowance = allowance
 
     def generate_operations(self) -> Iterable[Operation]:
         submissions_by_student = defaultdict(list)
@@ -166,26 +263,29 @@ class SlipDaysPolicy(Policy):
             submissions_by_student[submission.sid].append(submission)
 
         for submissions in submissions_by_student.values():
-            remaining_days = self.allowance_days
+            remaining_lateness = self.allowance
             for submission in sorted(
                 submissions,
                 key=lambda item: (item.submission_time, item.assignment_id),
             ):
-                days_used = min(remaining_days, lateness_hours(submission.lateness) / 24)
-                if days_used <= 0:
+                used_lateness = min(
+                    remaining_lateness,
+                    parse_timedelta(submission.lateness),
+                )
+                if used_lateness <= timedelta():
                     continue
-                remaining_days -= days_used
+                remaining_lateness -= used_lateness
                 yield Operation(
                     submission.sid,
                     submission.assignment_id,
-                    {'days_used': days_used},
+                    {'duration': str(used_lateness)},
                 )
 
     def apply(self, context, grade, parameters):
-        days_used = float(parameters['days_used'])
+        duration = parse_timedelta(str(parameters['duration']))
         return grade._replace(
-            waived_lateness_hours=grade.waived_lateness_hours + 24 * days_used,
-            comments=grade.comments + (f"Slip days used: {days_used:g}",),
+            waived_lateness=grade.waived_lateness + duration,
+            comments=grade.comments + (f"Slip days used: {duration}",),
         )
 
 
@@ -194,28 +294,44 @@ class ExtensionPolicy(Policy):
 
     type = "extension"
 
-    def __init__(self, *args, extension_days: float, **kwargs):
+    def __init__(
+        self,
+        course: "CourseManager",
+        id: str,
+        priority: int,
+        extension: timedelta,
+        student_ids: Iterable[str] | None = None,
+        assignment_ids: Iterable[str] | None = None,
+    ):
         """
         Configure an extension policy.
 
-        :param extension_days: number of late days forgiven for each target
+        :param extension:       lateness forgiven for each target
+        :param student_ids:     optional student IDs to target
+        :param assignment_ids:  optional assignment IDs to target
         """
-        super().__init__(*args, **kwargs)
-        self.extension_days = extension_days
+        super().__init__(
+            course,
+            id,
+            priority,
+            assignment_ids=assignment_ids,
+            student_ids=student_ids,
+        )
+        self.extension = extension
 
     def generate_operations(self) -> Iterable[Operation]:
         for submission in self.submissions():
             yield Operation(
                 submission.sid,
                 submission.assignment_id,
-                {'days': self.extension_days},
+                {'duration': str(self.extension)},
             )
 
     def apply(self, context, grade, parameters):
-        days = float(parameters['days'])
+        duration = parse_timedelta(str(parameters['duration']))
         return grade._replace(
-            waived_lateness_hours=grade.waived_lateness_hours + 24 * days,
-            comments=grade.comments + (f"Extension: {days:g} days",),
+            waived_lateness=grade.waived_lateness + duration,
+            comments=grade.comments + (f"Extension: {duration}",),
         )
 
 
@@ -224,15 +340,35 @@ class AdjustmentPolicy(Policy):
 
     type = "score_adjustment"
 
-    def __init__(self, *args, points: float, reason: str = "", **kwargs):
+    def __init__(
+        self,
+        course: "CourseManager",
+        id: str,
+        priority: int,
+        adjustment: Adjustment,
+        reason: str = "",
+        assignment_ids: Iterable[str] | None = None,
+        assignment_types: Iterable[str] | None = None,
+        student_ids: Iterable[str] | None = None,
+    ):
         """
         Configure a fixed score adjustment.
 
-        :param points: points added to each target grade
-        :param reason: optional explanation included in final grade comments
+        :param adjustment:        adjustment applied to each target grade
+        :param reason:            optional explanation for final grade comments
+        :param assignment_ids:    optional assignment IDs to target
+        :param assignment_types:  optional assignment types to target
+        :param student_ids:       optional student IDs to target
         """
-        super().__init__(*args, **kwargs)
-        self.points = points
+        super().__init__(
+            course,
+            id,
+            priority,
+            assignment_ids,
+            assignment_types,
+            student_ids,
+        )
+        self.adjustment = adjustment
         self.reason = reason
 
     def generate_operations(self) -> Iterable[Operation]:
@@ -240,18 +376,22 @@ class AdjustmentPolicy(Policy):
             yield Operation(
                 submission.sid,
                 submission.assignment_id,
-                {'points': self.points, 'reason': self.reason},
+                {'adjustment': self.adjustment.to_dict(), 'reason': self.reason},
             )
 
     def apply(self, context, grade, parameters):
         if grade.score is None:
             return grade
-        points = float(parameters['points'])
+        adjustment_data = parameters['adjustment']
+        if not isinstance(adjustment_data, Mapping):
+            raise ValueError("score adjustment must be an object")
+        adjustment = Adjustment.from_dict(adjustment_data)
         reason = str(parameters.get('reason', ''))
-        comment = f"Score adjustment: {points:+g} points"
+        score = grade.score + adjustment
+        comment = f"Score adjustment: {grade.score:g} -> {score:g} points"
         if reason:
             comment += f" ({reason})"
         return grade._replace(
-            score=grade.score + points,
+            score=score,
             comments=grade.comments + (comment,),
         )
