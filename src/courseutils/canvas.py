@@ -173,3 +173,21 @@ class CanvasManager:
         ))
 
         return assignment
+
+    def delete_assignment(self, id: str):
+        """Delete an assignment from Canvas and the local database.
+
+        The Canvas assignment is deleted before its local record so a remote
+        failure leaves the local assignment and its related grading data intact.
+
+        :param id: local database assignment ID
+        """
+        row = self.db_conn.execute(
+            "SELECT canvas_id FROM assignments WHERE id = ?",
+            (id,),
+        ).fetchone()
+        assert row, "could not find {}".format(id)
+
+        assignment = self.course.get_assignment(int(row['canvas_id']))
+        assignment.delete()
+        self.db_conn.execute("DELETE FROM assignments WHERE id = ?", (id,))
