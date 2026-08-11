@@ -29,7 +29,7 @@ class Student(NamedTuple):
 class Assignment(NamedTuple):
     id: str
     canvas_id: int
-    gradescope_id: int
+    gradescope_id: int | None
     title: str
     type: str
     max_points: float | None

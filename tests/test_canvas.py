@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import sqlite3
 from pathlib import Path
 
 from courseutils.canvas import CanvasManager
@@ -25,6 +26,19 @@ class FakeCourse:
     def get_assignment(self, assignment_id):
         self.assignment_id = assignment_id
         return self.assignment
+
+
+class FakeCreatedAssignment:
+    id = 789
+
+
+class FakeAssignmentCreator:
+    def __init__(self):
+        self.data = None
+
+    def create_assignment(self, assignment):
+        self.data = assignment
+        return FakeCreatedAssignment()
 
 
 class DeleteAssignmentTests(unittest.TestCase):
@@ -67,3 +81,54 @@ class DeleteAssignmentTests(unittest.TestCase):
         self.assertIsNotNone(self.db_conn.execute(
             "SELECT 1 FROM assignments WHERE id = 'hw1'"
         ).fetchone())
+
+
+class GradescopeAssignmentIdTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.db_conn = open_db(Path(self.tempdir.name) / "course.db")
+
+    def tearDown(self):
+        self.db_conn.close()
+        self.tempdir.cleanup()
+
+    def test_assignments_allow_multiple_missing_gradescope_ids(self):
+        self.db_conn.executemany("""
+            INSERT INTO assignments
+              (id, canvas_id, gradescope_id, title, type, max_points)
+            VALUES (?, ?, NULL, ?, 'lab', 10)
+        """, [
+            ('lab0', 1, 'Lab 0'),
+            ('lab1', 2, 'Lab 1'),
+        ])
+
+        rows = self.db_conn.execute(
+            "SELECT gradescope_id FROM assignments ORDER BY id"
+        ).fetchall()
+        self.assertEqual([row['gradescope_id'] for row in rows], [None, None])
+
+    def test_assignments_reject_duplicate_gradescope_ids(self):
+        self.db_conn.execute("""
+            INSERT INTO assignments
+              (id, canvas_id, gradescope_id, title, type, max_points)
+            VALUES ('hw0', 1, 123, 'Homework 0', 'homework', 100)
+        """)
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db_conn.execute("""
+                INSERT INTO assignments
+                  (id, canvas_id, gradescope_id, title, type, max_points)
+                VALUES ('hw1', 2, 123, 'Homework 1', 'homework', 100)
+            """)
+
+    def test_canvas_creation_accepts_missing_gradescope_id(self):
+        canvas = CanvasManager.__new__(CanvasManager)
+        canvas.db_conn = self.db_conn
+        canvas.course = FakeAssignmentCreator()
+
+        canvas.create_assignment('lab0', 'Lab 0', 'lab', 10, None)
+
+        row = self.db_conn.execute(
+            "SELECT gradescope_id FROM assignments WHERE id = 'lab0'"
+        ).fetchone()
+        self.assertIsNone(row['gradescope_id'])
