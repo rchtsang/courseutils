@@ -137,7 +137,8 @@ class CanvasManager:
         title: str,
         assignment_type: str,
         max_points: float|int,
-        gradescope_id: int | None,
+        gradescope_id: int|None,
+        **kwargs,
     ):
         """
         Create a new assignment in the database and add it to canvas
@@ -153,10 +154,12 @@ class CanvasManager:
         :param      gradescope_id:  optional assignment id on gradescope
         :type       gradescope_id:  int|None
         """
-        assignment = self.course.create_assignment(assignment={
+        fields = {
             'name': title,
             'points_possible': max_points,
-        })
+        }
+        fields.update(kwargs)
+        assignment = self.course.create_assignment(assignment=fields)
 
         self.db_conn.execute("""
             INSERT INTO assignments
