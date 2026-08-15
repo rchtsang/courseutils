@@ -45,9 +45,18 @@ CREATE TABLE IF NOT EXISTS assignments (
   gradescope_id INTEGER UNIQUE,
   title TEXT NOT NULL UNIQUE,
   type TEXT NOT NULL CHECK (type IN (
-    'homework', 'quiz', 'exam', 'project', 'final', 'midterm', 'lab', 'other'
+    'homework', 'quiz', 'exam', 'project', 'final', 'midterm', 'lab', 'participation', 'other'
   )),
   max_points REAL
+);
+
+-- define and link assignment groups to canvas
+CREATE TABLE IF NOT EXISTS assignment_groups (
+  type TEXT PRIMARY KEY CHECK (type IN (
+    'homework', 'quiz', 'exam', 'project', 'final', 'midterm', 'lab', 'participation', 'other'
+  )),
+  canvas_id INTEGER NOT NULL UNIQUE,
+  weight REAL
 );
 
 -- exported gradescope submissions

@@ -41,6 +41,31 @@ class FakeAssignmentCreator:
         return FakeCreatedAssignment()
 
 
+class FakeCreatedAssignmentGroup:
+    id = 987
+    group_weight = 25
+
+
+class FakeExistingAssignmentGroup:
+    def __init__(self, id, name, group_weight):
+        self.id = id
+        self.name = name
+        self.group_weight = group_weight
+
+
+class FakeAssignmentGroupCreator:
+    def __init__(self, groups=()):
+        self.data = None
+        self.groups = groups
+
+    def get_assignment_groups(self):
+        return self.groups
+
+    def create_assignment_group(self, **kwargs):
+        self.data = kwargs
+        return FakeCreatedAssignmentGroup()
+
+
 class DeleteAssignmentTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
@@ -132,3 +157,51 @@ class GradescopeAssignmentIdTests(unittest.TestCase):
             "SELECT gradescope_id FROM assignments WHERE id = 'lab0'"
         ).fetchone()
         self.assertIsNone(row['gradescope_id'])
+
+
+class AssignmentGroupTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.db_conn = open_db(Path(self.tempdir.name) / "course.db")
+        self.canvas = CanvasManager.__new__(CanvasManager)
+        self.canvas.db_conn = self.db_conn
+        self.canvas.course = FakeAssignmentGroupCreator()
+
+    def tearDown(self):
+        self.db_conn.close()
+        self.tempdir.cleanup()
+
+    def test_create_assignment_group_records_canvas_group(self):
+        group = self.canvas.create_assignment_group(
+            'homework',
+            25,
+            rules={'drop_lowest': 1},
+        )
+
+        self.assertEqual(group.id, 987)
+        self.assertEqual(self.canvas.course.data, {
+            'name': 'Homework',
+            'group_weight': 25,
+            'rules': {'drop_lowest': 1},
+        })
+        row = self.db_conn.execute(
+            "SELECT type, canvas_id, weight FROM assignment_groups"
+        ).fetchone()
+        self.assertEqual(dict(row), {
+            'type': 'homework',
+            'canvas_id': 987,
+            'weight': 25,
+        })
+
+    def test_create_assignment_group_reuses_existing_canvas_group(self):
+        existing_group = FakeExistingAssignmentGroup(654, 'Homework', 30)
+        self.canvas.course = FakeAssignmentGroupCreator([existing_group])
+
+        group = self.canvas.create_assignment_group('homework', 25)
+
+        self.assertIs(group, existing_group)
+        self.assertIsNone(self.canvas.course.data)
+        row = self.db_conn.execute(
+            "SELECT canvas_id, weight FROM assignment_groups"
+        ).fetchone()
+        self.assertEqual(dict(row), {'canvas_id': 654, 'weight': 30})

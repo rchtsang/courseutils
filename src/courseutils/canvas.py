@@ -20,7 +20,7 @@ class CanvasManager:
         self.course = self.canvasapi.get_course(course_id)
 
 
-    def fetch_groups(self) -> dict:
+    def fetch_student_groups(self) -> dict:
         """
         Loads groups from course and constructs current groupings
 
@@ -130,6 +130,47 @@ class CanvasManager:
             progress = progress.query()
 
         return progress
+
+    def create_assignment_group(
+        self,
+        type: str,
+        weight: float | None = None,
+        **kwargs,
+    ):
+        """Create an assignment group in Canvas and record it locally.
+
+        :param type: assignment type represented by the group
+        :param weight: optional percentage of the final grade for this group
+        :param kwargs: additional Canvas assignment-group fields
+        :returns: the Canvas assignment-group resource
+        """
+        assert not self.db_conn.execute(
+            "SELECT 1 FROM assignment_groups WHERE type = ?",
+            (type,),
+        ).fetchone(), \
+            "assignment group already exists: {}".format(type)
+
+        fields = { 'name': type.title() }
+        if weight is not None:
+            fields['group_weight'] = weight
+        fields.update(kwargs)
+
+        weight = fields.get('group_weight')
+
+        for g in self.course.get_assignment_groups():
+            if g.name == fields['name']:
+                group = g
+                break
+        else:
+            group = self.course.create_assignment_group(**fields)
+
+        weight = getattr(group, 'group_weight', weight)
+        self.db_conn.execute("""
+            INSERT INTO assignment_groups (type, canvas_id, weight)
+            VALUES (?, ?, ?)
+        """, (type, group.id, weight))
+
+        return group
 
     def create_assignment(
         self,
