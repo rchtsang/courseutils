@@ -18,6 +18,10 @@ class CanvasManager:
         self.db_conn = db_conn
         self.canvasapi = canvasapi.Canvas(self.CANVAS_BASE, self.CANVAS_TOKEN)
         self.course = self.canvasapi.get_course(course_id)
+        if not getattr(self.course, 'apply_assignment_group_weights', False):
+            self.course.update(
+                course={'apply_assignment_group_weights': True},
+            )
 
 
     def fetch_student_groups(self) -> dict:
@@ -144,12 +148,6 @@ class CanvasManager:
         :param kwargs: additional Canvas assignment-group fields
         :returns: the Canvas assignment-group resource
         """
-        assert not self.db_conn.execute(
-            "SELECT 1 FROM assignment_groups WHERE type = ?",
-            (type,),
-        ).fetchone(), \
-            "assignment group already exists: {}".format(type)
-
         fields = { 'name': type.title() }
         if weight is not None:
             fields['group_weight'] = weight
@@ -158,12 +156,22 @@ class CanvasManager:
         weight = fields.get('group_weight')
 
         for g in self.course.get_assignment_groups():
-            if g.name == fields['name']:
-                group = g
-                break
-        else:
-            group = self.course.create_assignment_group(**fields)
+            if g.name != fields['name']:
+                continue
+            if weight is not None and g.group_weight != weight:
+                raise ValueError(
+                    f"Canvas assignment group {type} has weight "
+                    f"{g.group_weight}, not {weight}"
+                )
+            return g
 
+        assert not self.db_conn.execute(
+            "SELECT 1 FROM assignment_groups WHERE type = ?",
+            (type,),
+        ).fetchone(), \
+            "assignment group already exists: {}".format(type)
+
+        group = self.course.create_assignment_group(**fields)
         weight = getattr(group, 'group_weight', weight)
         self.db_conn.execute("""
             INSERT INTO assignment_groups (type, canvas_id, weight)

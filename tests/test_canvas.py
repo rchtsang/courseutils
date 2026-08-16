@@ -2,6 +2,7 @@ import tempfile
 import unittest
 import sqlite3
 from pathlib import Path
+from unittest.mock import patch
 
 from courseutils.canvas import CanvasManager
 from courseutils.db import open_db
@@ -64,6 +65,24 @@ class FakeAssignmentGroupCreator:
     def create_assignment_group(self, **kwargs):
         self.data = kwargs
         return FakeCreatedAssignmentGroup()
+
+
+class FakeCourseSettings:
+    def __init__(self, enabled):
+        self.apply_assignment_group_weights = enabled
+        self.data = None
+
+    def update(self, **kwargs):
+        self.data = kwargs
+        return True
+
+
+class FakeCanvasApi:
+    def __init__(self, course):
+        self.course = course
+
+    def get_course(self, course_id):
+        return self.course
 
 
 class DeleteAssignmentTests(unittest.TestCase):
@@ -194,14 +213,45 @@ class AssignmentGroupTests(unittest.TestCase):
         })
 
     def test_create_assignment_group_reuses_existing_canvas_group(self):
-        existing_group = FakeExistingAssignmentGroup(654, 'Homework', 30)
+        existing_group = FakeExistingAssignmentGroup(654, 'Homework', 25)
         self.canvas.course = FakeAssignmentGroupCreator([existing_group])
 
         group = self.canvas.create_assignment_group('homework', 25)
 
         self.assertIs(group, existing_group)
         self.assertIsNone(self.canvas.course.data)
-        row = self.db_conn.execute(
-            "SELECT canvas_id, weight FROM assignment_groups"
-        ).fetchone()
-        self.assertEqual(dict(row), {'canvas_id': 654, 'weight': 30})
+        self.assertIsNone(self.db_conn.execute(
+            "SELECT 1 FROM assignment_groups"
+        ).fetchone())
+
+    def test_create_assignment_group_rejects_canvas_weight_mismatch(self):
+        existing_group = FakeExistingAssignmentGroup(654, 'Homework', 30)
+        self.canvas.course = FakeAssignmentGroupCreator([existing_group])
+
+        with self.assertRaisesRegex(ValueError, 'has weight 30'):
+            self.canvas.create_assignment_group('homework', 25)
+
+        self.assertIsNone(self.canvas.course.data)
+        self.assertIsNone(self.db_conn.execute(
+            "SELECT 1 FROM assignment_groups"
+        ).fetchone())
+
+    def test_canvas_manager_enables_assignment_group_weights(self):
+        course = FakeCourseSettings(enabled=False)
+        canvasapi = FakeCanvasApi(course)
+
+        with patch('courseutils.canvas.canvasapi.Canvas', return_value=canvasapi):
+            CanvasManager(1, self.db_conn)
+
+        self.assertEqual(course.data, {
+            'course': {'apply_assignment_group_weights': True},
+        })
+
+    def test_canvas_manager_leaves_enabled_weights_unchanged(self):
+        course = FakeCourseSettings(enabled=True)
+        canvasapi = FakeCanvasApi(course)
+
+        with patch('courseutils.canvas.canvasapi.Canvas', return_value=canvasapi):
+            CanvasManager(1, self.db_conn)
+
+        self.assertIsNone(course.data)
