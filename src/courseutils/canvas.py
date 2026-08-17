@@ -1,10 +1,17 @@
 import os
 import time
+import re
 import sqlite3 as sql
 
 import canvasapi
 
 from .db import *
+
+STEVENS_SECTION_PTRN = re.compile(
+    r"(?P<year>\d{4})"
+    r"(?P<session>S|F) "
+    r"(?P<subject>\w+) "
+    r"(?P<num>\d+)-(?P<sec>\w+)")
 
 class CanvasManager:
     CANVAS_BASE = "https://sit.instructure.com"
@@ -71,28 +78,33 @@ class CanvasManager:
             WHERE canvas_id NOT IN ({', '.join('?' * len(students))})
         """, tuple(students.keys()))
 
-        data = {}
+        student_data = {}
+        for u in students.values():
+            status = "enrolled"
+            if u.enrollments[0]['type'] == 'ObserverEnrollment':
+                status = "audit"
+
+            student_data[u.id] = dict(
+                canvas_id=str(u.id),
+                sortable_name=str(u.sortable_name),
+                name=str(u.name),
+                sid=str(u.sis_user_id),
+                email=str(u.email),
+                status=status,
+            )
+
         for sec in sections:
+            assert (m := STEVENS_SECTION_PTRN.search(sec.name)), \
+                "invalid section name: {}".format(sec.name)
+            section_name = m.group('sec')
+            key = "lab_section_id" if "L" in section_name else "section_id"
+
             for student in sec.students:
-                u = students[student['id']]
-                status = "enrolled"
-                if u.enrollments[0]['type'] == 'ObserverEnrollment':
-                    status = "audit"
+                student_data[student['id']][key] = sec.id
 
-                data[u.id] = dict(
-                    canvas_id=str(u.id),
-                    sortable_name=str(u.sortable_name),
-                    name=str(u.name),
-                    sid=str(u.sis_user_id),
-                    email=str(u.email),
-                    section_id=str(sec.id),
-                    lab_section_id=None, # TODO: figure out how to manage this gracefully
-                    status=status,
-                )
+        assert student_data.keys() == students.keys(), "values to insert != students"
 
-        assert data.keys() == students.keys(), "values to insert != students"
-
-        update_table('students', self.db_conn, list(data.values()), ['canvas_id'])
+        update_table('students', self.db_conn, list(student_data.values()), ['canvas_id'])
 
 
     def upload_grades(

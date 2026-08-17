@@ -88,8 +88,12 @@ def update_table(
 
     columns = set(tables[tbl_name])
 
-    assert all([set(row) == columns for row in data]), \
-        "row from new data has invalid columns"
+    for row in data:
+        assert set(row) == columns, (
+            "row from new data has invalid columns.\n"
+            "expected:\n{}\nfound\n{}".format(
+                str(list(sorted(set(row)))), str(list(sorted(columns))))
+        )
 
     m = [ k for k in keys if k not in columns ]
     assert len(m) == 0, \
