@@ -91,7 +91,7 @@ def update_table(
     for row in data:
         assert set(row) == columns, (
             "row from new data has invalid columns.\n"
-            "expected:\n{}\nfound\n{}".format(
+            "found:\n{}\nexpected\n{}".format(
                 str(list(sorted(set(row)))), str(list(sorted(columns))))
         )
 

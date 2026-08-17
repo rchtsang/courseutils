@@ -6,6 +6,7 @@ import sqlite3 as sql
 import canvasapi
 
 from .db import *
+from .models import *
 
 STEVENS_SECTION_PTRN = re.compile(
     r"(?P<year>\d{4})"
@@ -65,8 +66,7 @@ class CanvasManager:
             enrollment_type=['student', 'observer'],
             include=['enrollments'],
         )
-        sections = self.course.get_sections(include=['students'])
-
+        # may contain students from bad sections
         students = { u.id: u for u in students }
 
         assert students, "canvas returned no students!"
@@ -78,8 +78,36 @@ class CanvasManager:
             WHERE canvas_id NOT IN ({', '.join('?' * len(students))})
         """, tuple(students.keys()))
 
+        # prevent pulling students from invalid sections
+        lec_sections = [
+            Section(**dict(row)) for row in self.db_conn.execute(
+                "SELECT * FROM sections").fetchall()
+        ]
+        lab_sections = [
+            LabSection(**dict(row)) for row in self.db_conn.execute(
+                "SELECT * FROM lab_sections").fetchall()
+        ]
+        db_sections = {}
+        db_sections.update({ s.id: s for s in lec_sections })
+        db_sections.update({ s.id: s for s in lab_sections })
+
+        assert db_sections, "sections must be defined first"
+
+        canvas_sections = {}
+        for sec in self.course.get_sections(include=['students']):
+            if sec.id not in db_sections:
+                continue
+            canvas_sections[sec.id] = sec
+
         student_data = {}
         for u in students.values():
+            if all([
+                e['course_section_id'] not in db_sections \
+                for e in u.enrollments
+            ]):
+                # skip students in invalid sections
+                continue
+
             status = "enrolled"
             if u.enrollments[0]['type'] == 'ObserverEnrollment':
                 status = "audit"
@@ -91,9 +119,11 @@ class CanvasManager:
                 sid=str(u.sis_user_id),
                 email=str(u.email),
                 status=status,
+                section_id=None,
+                lab_section_id=None,
             )
 
-        for sec in sections:
+        for sec in canvas_sections.values():
             assert (m := STEVENS_SECTION_PTRN.search(sec.name)), \
                 "invalid section name: {}".format(sec.name)
             section_name = m.group('sec')
@@ -102,7 +132,7 @@ class CanvasManager:
             for student in sec.students:
                 student_data[student['id']][key] = sec.id
 
-        assert student_data.keys() == students.keys(), "values to insert != students"
+        # assert student_data.keys() == students.keys(), "values to insert != students"
 
         update_table('students', self.db_conn, list(student_data.values()), ['canvas_id'])
 
